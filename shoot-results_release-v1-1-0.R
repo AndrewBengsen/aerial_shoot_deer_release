@@ -55,7 +55,7 @@ total_cost_hr <- function(heli_hr, shtr = shtr_hr, nav = nav_hr,
   p_ammo <- (ammo_cost * deer * shots) / hr_cost * 100
   out <- list(hr_cost = round(hr_cost), p_var = round(p_var), p_ammo = round(p_ammo))
 }
-
+plot_trace <- F
 
 ## Load and format data ----
 # Full data set, one row for each day's shooting
@@ -76,9 +76,8 @@ cat("model {
  # Likelihood
  for(i in 1:nobs){
     y[i] ~ dgamma(shape, rate[i])
-    # expected kills per hour at each density level
+    # expected kills per hour
     mean[i] <- -beta + alpha * (1-exp(-(dhat[i] * delta)))
-    # convert the mean to the rate parameter
     rate[i] <- shape/mean[i]
     
  } #i
@@ -131,6 +130,8 @@ ivb_list <- as.mcmc.list(ivb_mod)
 ivb_sum <- mod_results(ivb_list)
 ivb_modmat <- ivb_sum$modMat
 
+head(ivb_sum$sumTab) 
+
 pred_a_ivb_mcmc <- ivb_sum$sumTab$Mean[which(ivb_sum$sumTab$Par == "alpha")]
 pred_b_ivb_mcmc <- ivb_sum$sumTab$Mean[which(ivb_sum$sumTab$Par == "beta")]
 pred_d_ivb_mcmc <- ivb_sum$sumTab$Mean[which(ivb_sum$sumTab$Par == "delta")]
@@ -147,8 +148,8 @@ for (i in 1:nrow(pred_mean_dist_ivb)){
 	                                      ivb_modmat[i,"delta"], 
 	                                      predx)
 }
+
 ivb_df <- data.frame(x = predx,
-                     mean_sum = pred_iv_fun(pred_a_ivb_mcmc, pred_b_ivb_mcmc, pred_d_ivb_mcmc, predx),
                      mean = apply(pred_mean_dist_ivb, MARGIN = 2, mean),
                      cri_lo = apply(pred_mean_dist_ivb, MARGIN = 2, quantile, prob = 0.025), # credible int
                      cri_up = apply(pred_mean_dist_ivb, MARGIN = 2, quantile, prob = 0.975),
@@ -204,8 +205,8 @@ mort_dat <- list(y = dat_eo$kills,
                  ncase = nrow(dat_eo),
                  site = seq(1,nrow(dat_eo),1),
                  dhat = dat_eo$dhat,
-                 se_dhat = dat_eo$se_dhat) 
-
+                 se_dhat = dat_eo$se_dhat,
+                 area = dat_eo$nhat/dat_eo$dhat) 
 set.seed(1080)
 mort_mod <- run.jags(method = "parallel",
                    model = "mortality.txt",
@@ -222,6 +223,7 @@ mort_mod <- run.jags(method = "parallel",
 mort_list <- as.mcmc.list(mort_mod)
 mort_sum <- mod_results(mort_list)
 mort_modmat <- mort_sum$modMat
+head(mort_sum$sumTab)
 
 # Proportion reduction credible intervals and sd into EO dataframe
 dat_eo$prop_lwr <- mort_sum$sumTab$lcri[grep("p", mort_sum$sumTab$Par)]
@@ -237,6 +239,12 @@ dat_eo$dhat2 <- mort_sum$sumTab$Mean[grep("dhat2", mort_sum$sumTab$Par)]
 dat_eo$dhat2_lwr <- mort_sum$sumTab$lcri[grep("dhat2", mort_sum$sumTab$Par)]
 dat_eo$dhat2_upr <- mort_sum$sumTab$ucri[grep("dhat2", mort_sum$sumTab$Par)]
 dat_eo$dhat2_se <- mort_sum$sumTab$SD[grep("dhat2", mort_sum$sumTab$Par)]
+
+# Initial density, mortality and residual density
+dat_eo <- dat_eo %>%
+  select(key, species, hours_stnd, dhat, se_dhat, 
+         mortality, prop_lwr, prop_upr, 
+         dhat2, dhat2_lwr, dhat2_upr)
 
 ## Michaelis-Menten function for effort:outcomes relationship ----
 
@@ -263,6 +271,7 @@ cat("model {
      # expected mortality at each level of standardised control effort (shoot hours / km2)/(nhat / km2 * 1000)
      pred_mu[j] <- alpha * predx[j] / (predx[j] + delta)
      } #j
+
 }", fill=TRUE, file="mm_eo.txt")
 
 predx_eo <- seq(0.001,60,length.out=60)
@@ -279,6 +288,7 @@ eo_inits <- function(){
 }
 
 set.seed(1080)
+
 mm_eo_mod <- run.jags(method = "parallel",
                    model = "mm_eo.txt",
                    monitor = fr_pars,
@@ -295,9 +305,7 @@ mm_eo_mod <- run.jags(method = "parallel",
 mm_eo_list <- as.mcmc.list(mm_eo_mod)
 mm_eo_sum <- mod_results(mm_eo_list)
 mm_eo_modmat <- mm_eo_sum$modMat
- 
-head(mm_eo_sum$sumTab) %>% 
-    knitr::kable(digits = 2)
+head(mm_eo_sum$sumTab)
 
 if(plot_trace == T){
   s_mm <- mm_eo_sum$S
@@ -330,10 +338,6 @@ for (i in 1:nrow(pred_mean_dist_mm)){
 pred_eo_index <- grep("pred", names(mm_eo_modmat))
 mm_eo_df <- data.frame(hours = predx_eo,
                        mean = apply(pred_mean_dist_mm, MARGIN = 2, mean),
-                       mean_sum = pred_fun_mm(pred_a_mm_eo_mcmc, 
-                                              0,
-                                              pred_d_mm_eo_mcmc, 
-                                              predx_eo),
                        mean_samp = apply(mm_eo_modmat[,pred_eo_index], MARGIN = 2, mean),
                        cri_lo = apply(pred_mean_dist_mm, MARGIN = 2, quantile, prob = 0.025), # credible int
                        cri_up = apply(pred_mean_dist_mm, MARGIN = 2, quantile, prob = 0.975),
@@ -341,7 +345,7 @@ mm_eo_df <- data.frame(hours = predx_eo,
                        pi_up = apply(mm_eo_modmat[,pred_eo_index], 2, quantile, prob = 0.975))
 
 ## shots per deer ----
-# Data from Hampton et al. (in press) Animal welfare outcomes of helicopter-based shooting of deer in Australia. Wildlife Research
+# Data from Hampton et al. (2021) Animal welfare outcomes of helicopter-based shooting of deer in Australia. Wildlife Research
 shots_deer <- 4.14
 shots_deer_sd <- 2.2
 
@@ -376,12 +380,11 @@ cat("model {
     y[i] ~ dgamma(shape, rate[i])
     # expected kills per hour at each density level
     mean[i] <- -beta + alpha * (1-exp(-(dhat[i] * delta)))
-    # convert the mean to the rate parameter
     rate[i] <- shape/mean[i]
  } #i
  
  # Predicted cost per hour for three helicopter types and 
- # pop'n densities 0 to 40
+ # population densities 0 to 40
  for(h in 1:nheli){ # Number of helicopters to assess cost over
   for(j in 1:npred){
    cost_hr[j,h] <- (predy[j,h]*shots_deer*cost_shot) + cost_heli[h] + 2*cost_staff
@@ -460,7 +463,7 @@ cat("model {
  phi ~ dunif(0, 10)
  shape ~ dgamma(0.01, 0.01)
 
- # Likelihood, Effort:Outcomes
+ # Effort:Outcomes
  for(i in 1:nobs){
     y[i] ~ dbeta(a[i],b[i])
     a[i] <- mu[i]*phi
@@ -474,7 +477,7 @@ cat("model {
      predy[j] ~ dbeta(pred_a[j], pred_b[j])
      pred_a[j] <- pred_mu[j]*phi
      pred_b[j] <- (1-pred_mu[j])*phi
-     # predicted mortality at each level of standardised control effort (shoot hours / km2)/(nhat / km2 * 1000)
+     # expected mortality at each level of standardised control effort (shoot hours / km2)/(nhat / km2 * 1000)
      pred_mu[j] <- alpha * predx[j] / (predx[j] + delta)
      } #j
     
@@ -485,7 +488,6 @@ cat("model {
    
 }", fill=TRUE, file="kd_eo_beta.txt")
 
-predx_eo2 <- seq(0.5,60, length.out=60)
 kd_eo_dat <- list(y = dat_eo$mortality,
                   hours = dat_eo$hours_stnd,
                   nobs = nrow(dat_eo),
@@ -543,24 +545,14 @@ kd_modmat_indx <- grep("predy", colnames(kd_eo_modmat))
 # Predicted knockdown, given hours
 eo_df_kd <- data.frame(hours = predx_eo,
                        mean_kd = apply(kd_eo_modmat[,kd_modmat_indx], MARGIN = 2, mean),
-                       pi_kd_lo = apply(kd_eo_modmat[,kd_modmat_indx], 2, quantile, prob = 0.025), # prediction 
+                       pi_kd_lo = apply(kd_eo_modmat[,kd_modmat_indx], 2, quantile, prob = 0.025), 
                        pi_kd_up = apply(kd_eo_modmat[,kd_modmat_indx], 2, quantile, prob = 0.975))
 
 # Predicted hours to achieve knockdown
 eo_df_hrs <- data.frame(knockdown = predkd,
                        mean_hrs = apply(kd_eo_modmat[,hrs_modmat_indx], MARGIN = 2, mean),
-                       pi_hrs_lo1 = apply(pred_mean_dist_kd, 2, quantile, prob = 0.025), # prediction int
-                       pi_hrs_up1 = apply(pred_mean_dist_kd, 2, quantile, prob = 0.975),
-                       pi_hrs_lo = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.025), # prediction 
-                       pi_hrs_up = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.975),
-                       pi_lo20 = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.4), 
-                       pi_up20 = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.6),
-                       pi_lo40 = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.3), 
-                       pi_up40 = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.7),
-                       pi_lo60 = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.2), 
-                       pi_up60 = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.8),
-                       pi_lo80 = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.1), 
-                       pi_up80 = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.9))
+                       pi_hrs_lo = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.025), 
+                       pi_hrs_up = apply(kd_eo_modmat[,hrs_modmat_indx], 2, quantile, prob = 0.975))
 
 interval_tab <- kd_eo_sum$sumTab %>%
   filter(grepl("predy", Par)) %>%
@@ -654,15 +646,13 @@ upr <- cost_df %>%
   mutate(Density = as.numeric(gsub("d", "", name))) %>%
   dplyr::select(Mortality, Density, Cost_upr=value)
 
+# Summarise estimated cost of operations over 135 km^2 (using Jet Ranger)
+# as a function of initial population density and desired mortality
+
 cost_representative <- cost_representative %>%
   mutate(cost_lwr = lwr$Cost_lwr,
-         cost_upr = upr$Cost_upr, 
-         cost1000 = Cost/1000,
-         cost_lwr1000 = lwr$Cost_lwr/1000,
-         cost_upr1000 = upr$Cost_upr/1000)
+         cost_upr = upr$Cost_upr)
 
-# check output with untidy version used for ms ---- 
-  
 cost_fun_135 <- function(deer_dens, reduction){
   n_deer <- deer_dens * 135
   n_deer_kill <- reduction * n_deer
@@ -673,21 +663,5 @@ cost_fun_135 <- function(deer_dens, reduction){
            n_deer_killed = Mortality * n_deer,
            cost_per_deer = Cost / n_deer_killed)
 }
-
 (cost_75 <- cost_fun_135(deer_dens = c(5,40), reduction = 0.75))
 (cost_35 <- cost_fun_135(deer_dens = c(5,40), reduction = 0.35))
-
-head(ivb_sum$sumTab) %>%
-  knitr::kable(digits=2)
-
-head(mort_sum$sumTab) %>%
-  knitr::kable(digits=2)
-
-head(mm_eo_sum$sumTab) %>%
-  knitr::kable(digits=2)
-
-head(cost_hr_sum$sumTab) %>%
-  knitr::kable(digits=2)
-
-head(kd_eo_sum$sumTab) %>%
-  knitr::kable(digits=2)
